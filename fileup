@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# Check if a filename argument is provided
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <filename> [-t] [-e <expiry>]"
+    echo "-t: Include X-Torrent header (optional)"
+    echo "-e: Set expiry time (optional)"
+    echo "    Valid expiry values: 1H (1 Hour), 1D (1 Day), 3D (3 Days), 1W (1 Week), 1M (1 Month)"
+    exit 1
+fi
+
+full_path="$1"
+filename=$(basename "$full_path")
+upload_url="https://filehaus.su/api/upload/${filename// /%20}" # Replace spaces with %20 for URL encoding
+content_type=$(file -b --mime-type "$full_path")
+
+# Initialize flags
+torrent_flag=false
+expiry_time=0
+
+# Parse optional flags
+shift
+while getopts "te:" opt; do
+    case $opt in
+        t)
+            torrent_flag=true
+            ;;
+        e)
+            case $OPTARG in
+                1H) expiry_time=3600 ;;
+                1D) expiry_time=86400 ;;
+                3D) expiry_time=259200 ;;
+                1W) expiry_time=604800 ;;
+                1M) expiry_time=2592000 ;;
+                *)
+                    echo "Invalid expiry time. Please use 1H, 1D, 3D, 1W, or 1M."
+                    exit 1
+                    ;;
+            esac
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Construct curl command
+curl_cmd="curl -X PUT -T \"$full_path\" -H \"Content-Type: $content_type\""
+
+if [ "$torrent_flag" = true ]; then
+    curl_cmd+=" -H \"X-Torrent: 1\""
+fi
+
+if [ $expiry_time -ne 0 ]; then
+    curl_cmd+=" -H \"X-Expires-After: $expiry_time\""
+fi
+
+curl_cmd+=" \"$upload_url\""
+
+# Execute the curl command and capture the response
+echo "Uploading file: $filename ..."
+response=$(eval $curl_cmd)
+
+# Extract URL and torrent link if available from server response
+upload_link=$(echo "$response" | grep -oP 'https://cdn[1-9]\.filehaus\.su/files/[^/]+/'"${filename// /%20}" | head -n1)
+
+torrent_link=""
+if [ "$torrent_flag" = true ]; then
+    torrent_link=$(echo "$response" | grep -oP 'https://cdn[1-9]\.filehaus\.su/files/[^/]+/'"${filename// /%20}"'\.torrent' | head -n1)
+fi
+
+# Print results including upload URL and optionally torrent URL
+if [ -n "$upload_link" ]; then
+    echo "url: $upload_link"
+else
+    echo "Warning: Could not extract upload URL from server response."
+fi
+
+if [ "$torrent_flag" = true ] && [ -n "$torrent_link" ]; then
+    echo "torrent: $torrent_link"
+elif [ "$torrent_flag" = true ]; then
+    echo "Warning: Could not extract torrent link from server response."
+fi
+
+if [ $expiry_time -ne 0 ]; then
+    case $expiry_time in
+        3600) echo "File will expire after 1 Hour" ;;
+        86400) echo "File will expire after 1 Day" ;;
+        259200) echo "File will expire after 3 Days" ;;
+        604800) echo "File will expire after 1 Week" ;;
+        2592000) echo "File will expire after 1 Month" ;;
+    esac
+else
+    echo "File will not expire (set to infinite)"
+fi
